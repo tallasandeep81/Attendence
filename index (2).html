@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141c33">
+<title>TVL Attendance</title>
+
+<!--
+  TVL Face Attendance — punch screen
+  ===================================================================
+  Hosted on GitHub Pages, NOT in Apps Script: the Apps Script iframe
+  sandbox blocks getUserMedia, so a camera page cannot run there.
+
+  Fill in API_URL below with your /exec deployment URL.
+
+  Face models: put the four model files in ./models/ next to this file
+  (see README). Loading them from a CDN also works but leaves you at the
+  mercy of a third party at 9 AM on a Monday.
+-->
+
+<style>
+  :root{
+    --ink:#141c33; --ink-2:#232d4d; --line:#2c3862;
+    --paper:#f4f6fb; --white:#ffffff;
+    --steel:#8791b0; --steel-2:#5b6480;
+    --go:#12a150; --wait:#e08600; --stop:#d3352b; --live:#3d7bfa;
+    --r:14px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--ink); color:var(--white);
+    font-family:'Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif;
+    display:flex; flex-direction:column;
+    padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+
+  header{padding:14px 18px 10px;display:flex;align-items:center;gap:12px;}
+  header .mark{
+    width:38px;height:38px;border-radius:9px;background:var(--white);
+    display:flex;align-items:center;justify-content:center;padding:4px;
+  }
+  header .mark img{max-width:100%;max-height:100%;}
+  header h1{font-size:16px;font-weight:700;margin:0;letter-spacing:.3px;}
+  header .sub{font-size:11px;color:var(--steel);letter-spacing:2px;margin-top:1px;}
+
+  main{flex:1;display:flex;flex-direction:column;align-items:center;
+       justify-content:center;padding:0 18px;gap:14px;}
+
+  /* The signature element: one round viewport whose ring carries state.
+     Colour is the whole status language here — no text needed to know
+     whether the phone has found you. */
+  .scope{position:relative;width:min(74vw,290px);aspect-ratio:1;}
+  .scope video,.scope canvas{
+    position:absolute;inset:9px;width:calc(100% - 18px);height:calc(100% - 18px);
+    border-radius:50%;object-fit:cover;background:#0c1122;
+    transform:scaleX(-1);   /* mirror, so moving left moves left */
+  }
+  .ring{
+    position:absolute;inset:0;border-radius:50%;
+    border:5px solid var(--line);transition:border-color .25s;
+  }
+  .ring.searching{border-color:var(--live);animation:pulse 1.6s ease-in-out infinite;}
+  .ring.found{border-color:var(--wait);}
+  .ring.ok{border-color:var(--go);}
+  .ring.bad{border-color:var(--stop);}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.45;}}
+  @media (prefers-reduced-motion:reduce){.ring.searching{animation:none;}}
+
+  .who{text-align:center;min-height:56px;}
+  .who .name{font-size:24px;font-weight:800;letter-spacing:.3px;}
+  .who .meta{font-size:12px;color:var(--steel);margin-top:3px;}
+
+  .gps{
+    display:flex;align-items:center;gap:7px;font-size:12px;color:var(--steel);
+    background:var(--ink-2);border-radius:999px;padding:7px 14px;
+  }
+  .gps .dot{width:8px;height:8px;border-radius:50%;background:var(--steel);}
+  .gps.ok .dot{background:var(--go);} .gps.weak .dot{background:var(--wait);}
+  .gps.bad .dot{background:var(--stop);}
+
+  .types{display:grid;grid-template-columns:1fr 1fr;gap:9px;width:100%;max-width:420px;}
+  .types button{
+    padding:15px 8px;border-radius:var(--r);border:1.5px solid var(--line);
+    background:var(--ink-2);color:var(--white);font-size:13.5px;font-weight:700;
+    letter-spacing:.4px;cursor:pointer;
+  }
+  .types button.pick{border-color:var(--go);background:#12331f;}
+  .types button .hint{display:block;font-size:9.5px;font-weight:600;
+    color:var(--steel);letter-spacing:1px;margin-top:3px;}
+
+  .actions{width:100%;max-width:420px;display:flex;flex-direction:column;gap:9px;
+           padding-bottom:16px;}
+  .btn{
+    padding:17px;border-radius:var(--r);border:0;font-size:16px;font-weight:800;
+    letter-spacing:.5px;cursor:pointer;background:var(--go);color:#fff;
+  }
+  .btn:disabled{background:#3a4363;color:#8791b0;}
+  .btn.ghost{background:transparent;border:1.5px solid var(--line);color:var(--steel);
+             font-size:13px;font-weight:600;padding:12px;}
+
+  .msg{font-size:13px;text-align:center;min-height:20px;padding:0 10px;line-height:1.45;}
+  .msg.err{color:#ff8f86;} .msg.good{color:#5fe19b;}
+
+  .done{text-align:center;padding:10px 0;}
+  .done .tick{font-size:46px;line-height:1;}
+  .done .big{font-size:22px;font-weight:800;margin-top:8px;}
+  .done .small{font-size:13px;color:var(--steel);margin-top:5px;}
+
+  dialog{border:0;border-radius:var(--r);padding:22px;background:var(--white);
+         color:var(--ink);width:min(90vw,330px);}
+  dialog h2{margin:0 0 6px;font-size:17px;}
+  dialog p{margin:0 0 14px;font-size:13px;color:#5b6480;line-height:1.5;}
+  dialog input{width:100%;padding:13px;font-size:17px;border:1.5px solid #cfd6e6;
+               border-radius:10px;text-align:center;letter-spacing:4px;}
+  dialog button{width:100%;margin-top:12px;padding:14px;border:0;border-radius:10px;
+                background:var(--ink);color:#fff;font-size:15px;font-weight:700;}
+  .queued{font-size:11px;color:var(--wait);text-align:center;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="mark"><img src="./logo-mark.png" alt="TVL"></div>
+  <div>
+    <h1>Attendance</h1>
+    <div class="sub">TRANS VALVES INDIA PVT LTD</div>
+  </div>
+</header>
+
+<main>
+  <div class="scope">
+    <div class="ring" id="ring"></div>
+    <video id="cam" playsinline muted autoplay></video>
+    <canvas id="shot" style="display:none"></canvas>
+  </div>
+
+  <div class="who" id="who">
+    <div class="name" id="name">Starting camera</div>
+    <div class="meta" id="meta">Hold still, face the light</div>
+  </div>
+
+  <div class="gps" id="gps"><span class="dot"></span><span id="gpsText">Finding location</span></div>
+
+  <div class="types" id="types" style="display:none">
+    <button data-t="OFFICE IN">Office in<span class="hint">REACHED WORK</span></button>
+    <button data-t="OFFICE OUT">Office out<span class="hint">LEAVING WORK</span></button>
+    <button data-t="VISIT IN">Visit in<span class="hint">REACHED SITE</span></button>
+    <button data-t="VISIT OUT">Visit out<span class="hint">LEAVING SITE</span></button>
+  </div>
+
+  <div class="msg" id="msg"></div>
+  <div class="queued" id="queued"></div>
+</main>
+
+<div class="actions">
+  <button class="btn" id="go" disabled>Checking</button>
+  <button class="btn ghost" id="again" style="display:none">Punch again</button>
+</div>
+
+<dialog id="pinBox">
+  <h2>Enter site PIN</h2>
+  <p>Ask your supervisor. You will only be asked once on this phone.</p>
+  <input id="pinIn" type="tel" inputmode="numeric" maxlength="8" placeholder="••••">
+  <button id="pinOk">Continue</button>
+</dialog>
+
+<script src="./face-api.min.js"></script>
+<script>
+/* ===================== CONFIGURE ME ===================== */
+const API_URL    = 'https://script.google.com/macros/s/AKfycbwomwMepj5woe_D7YEFSE5gIOHIijvXIB7wE_IJ4Z9QQmpfWEuwbJET7dICFrF2PzDLYw/exec';
+const MODEL_PATH = './models';
+/* ======================================================= */
+
+const $ = id => document.getElementById(id);
+const ring = $('ring');
+
+let roster = [], threshold = 0.5, matched = null, coords = null, picked = null;
+let modelsReady = false, busy = false;
+
+/* ---------- PIN, stored once per phone ---------- */
+function pin() { return localStorage.getItem('tvl_att_pin') || ''; }
+
+function askPin() {
+  $('pinBox').showModal();
+  $('pinOk').onclick = () => {
+    const v = $('pinIn').value.trim();
+    if (!v) return;
+    localStorage.setItem('tvl_att_pin', v);
+    $('pinBox').close();
+    boot();
+  };
+}
+
+/* ---------- talking to Apps Script ----------
+   text/plain on purpose: a JSON content type triggers a CORS preflight,
+   and Apps Script cannot answer an OPTIONS request. */
+async function api(payload) {
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(Object.assign({ pin: pin() }, payload))
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'Something went wrong.');
+  return data;
+}
+
+/* ---------- startup ---------- */
+async function boot() {
+  if (!pin()) return askPin();
+
+  try {
+    say('Loading face models…');
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_PATH),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_PATH),
+      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_PATH)
+    ]);
+    modelsReady = true;
+  } catch (e) {
+    return fail('Face models did not load. Check your connection and reload.');
+  }
+
+  try {
+    const r = await api({ action: 'roster' });
+    roster = r.employees || [];
+    threshold = r.threshold || 0.5;
+    localStorage.setItem('tvl_att_roster', JSON.stringify({ at: Date.now(), r }));
+  } catch (e) {
+    const cached = JSON.parse(localStorage.getItem('tvl_att_roster') || 'null');
+    if (e.message === 'Wrong PIN.') { localStorage.removeItem('tvl_att_pin'); return askPin(); }
+    if (!cached) return fail(e.message);
+    roster = cached.r.employees; threshold = cached.r.threshold;
+    say('Working from the saved list — no connection.');
+  }
+
+  if (!roster.length) return fail('Nobody is enrolled yet. Enrollment comes first.');
+
+  await startCamera();
+  locate();
+  flushQueue();
+
+  $('go').disabled = false;
+  $('go').textContent = 'Capture my face';
+  $('go').onclick = capture;
+  setRing('searching');
+  say('');
+  $('name').textContent = 'Ready';
+  $('meta').textContent = 'Fill the circle with your face';
+}
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 640 } },
+      audio: false
+    });
+    $('cam').srcObject = stream;
+    await $('cam').play();
+  } catch (e) {
+    fail('The camera is blocked. Allow camera access for this page, then reload.');
+    throw e;
+  }
+}
+
+/* ---------- location ----------
+   High accuracy, and the reading is shown to the person rather than
+   hidden — a 2 km fix is worth knowing about before you punch, not after. */
+function locate() {
+  if (!navigator.geolocation) {
+    return setGps('bad', 'This phone cannot share location');
+  }
+  navigator.geolocation.watchPosition(
+    p => {
+      coords = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy };
+      const a = Math.round(coords.acc);
+      setGps(a <= 60 ? 'ok' : 'weak', 'Location accurate to ' + a + ' m');
+    },
+    e => setGps('bad', e.code === 1 ? 'Location permission denied' : 'No location fix yet'),
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 10000 }
+  );
+}
+
+/* ---------- the punch ---------- */
+async function capture() {
+  if (busy || !modelsReady) return;
+  busy = true;
+  $('go').disabled = true;
+  $('go').textContent = 'Looking…';
+  setRing('searching');
+  say('');
+
+  const det = await faceapi
+    .detectSingleFace($('cam'), new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 }))
+    .withFaceLandmarks(true)
+    .withFaceDescriptor();
+
+  if (!det) {
+    setRing('bad');
+    busy = false; $('go').disabled = false; $('go').textContent = 'Try again';
+    return say('No face found. More light, hold the phone at eye level.', 'err');
+  }
+
+  setRing('found');
+
+  let best = null;
+  roster.forEach(e => {
+    const d = faceapi.euclideanDistance(det.descriptor, e.descriptor);
+    if (!best || d < best.d) best = { d, e };
+  });
+
+  if (!best || best.d > threshold) {
+    setRing('bad');
+    busy = false; $('go').disabled = false; $('go').textContent = 'Try again';
+    return say('Not recognised. Try again, or ask for a fresh enrollment.', 'err');
+  }
+
+  matched = best.e; matched.distance = best.d;
+  setRing('ok');
+  $('name').textContent = matched.name;
+  $('meta').textContent = matched.id + (matched.dept ? ' · ' + matched.dept : '') +
+                          ' · match ' + best.d.toFixed(2);
+
+  await suggestType();
+
+  $('types').style.display = 'grid';
+  $('go').textContent = 'Save punch';
+  $('go').onclick = save;
+  $('go').disabled = false;
+  busy = false;
+}
+
+async function suggestType() {
+  let next = 'OFFICE IN';
+  try {
+    const s = await api({ action: 'status', empId: matched.id });
+    next = s.next || next;
+    if (s.last) say('Last punch today: ' + s.last.type + ' at ' + s.last.time);
+  } catch (e) { /* offline — the default still lets them punch */ }
+  pickType(next);
+}
+
+function pickType(t) {
+  picked = t;
+  document.querySelectorAll('#types button').forEach(b =>
+    b.classList.toggle('pick', b.dataset.t === t));
+}
+
+document.getElementById('types').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (b) pickType(b.dataset.t);
+});
+
+async function save() {
+  if (busy || !matched || !picked) return;
+  busy = true;
+  $('go').disabled = true;
+  $('go').textContent = 'Saving…';
+
+  const payload = {
+    action: 'punch',
+    empId: matched.id, name: matched.name, type: picked,
+    lat: coords ? coords.lat : '', lng: coords ? coords.lng : '',
+    accuracy: coords ? coords.acc : '',
+    distance: matched.distance,
+    photo: snapshot(),
+    device: navigator.userAgent.slice(0, 110),
+    note: coords ? '' : 'no GPS fix'
+  };
+
+  try {
+    const r = await api(payload);
+    done(picked, r.at);
+  } catch (e) {
+    /* Never lose a punch to a dead signal — queue it and move on. */
+    queue(payload);
+    done(picked, 'saved on this phone', true);
+  }
+  busy = false;
+}
+
+/** Small enough to POST, big enough to recognise a face in. */
+function snapshot() {
+  const v = $('cam'), c = $('shot');
+  const side = Math.min(v.videoWidth, v.videoHeight) || 480;
+  c.width = 360; c.height = 360;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(v,
+    (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side,
+    0, 0, 360, 360);
+  return c.toDataURL('image/jpeg', 0.72);
+}
+
+function done(type, at, offline) {
+  setRing('ok');
+  $('types').style.display = 'none';
+  $('who').innerHTML =
+    '<div class="done"><div class="tick">✓</div>' +
+    '<div class="big">' + type + '</div>' +
+    '<div class="small">' + matched.name + ' · ' + at + '</div></div>';
+  say(offline ? 'No signal — this punch will upload by itself.' : 'Punch recorded.', 'good');
+  $('go').style.display = 'none';
+  $('again').style.display = 'block';
+  $('again').onclick = () => location.reload();
+}
+
+/* ---------- offline queue ---------- */
+function queue(p) {
+  const q = JSON.parse(localStorage.getItem('tvl_att_queue') || '[]');
+  q.push(p);
+  localStorage.setItem('tvl_att_queue', JSON.stringify(q));
+  showQueue();
+}
+
+async function flushQueue() {
+  const q = JSON.parse(localStorage.getItem('tvl_att_queue') || '[]');
+  if (!q.length) return;
+
+  const left = [];
+  for (const p of q) {
+    try { await api(p); } catch (e) { left.push(p); }
+  }
+  localStorage.setItem('tvl_att_queue', JSON.stringify(left));
+  showQueue();
+}
+
+function showQueue() {
+  const n = JSON.parse(localStorage.getItem('tvl_att_queue') || '[]').length;
+  $('queued').textContent = n ? n + ' punch' + (n === 1 ? '' : 'es') + ' waiting to upload' : '';
+}
+
+/* ---------- small helpers ---------- */
+function setRing(state) { ring.className = 'ring ' + (state || ''); }
+function setGps(state, text) { $('gps').className = 'gps ' + state; $('gpsText').textContent = text; }
+function say(t, kind) { const m = $('msg'); m.textContent = t || ''; m.className = 'msg ' + (kind || ''); }
+function fail(t) { say(t, 'err'); setRing('bad'); $('go').disabled = true; $('go').textContent = 'Cannot punch'; }
+
+window.addEventListener('online', flushQueue);
+showQueue();
+boot();
+</script>
+</body>
+</html>
