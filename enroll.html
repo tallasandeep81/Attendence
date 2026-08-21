@@ -99,11 +99,28 @@
   </div>
 </div>
 
-<script src="./face-api.min.js"></script>
+<!-- face-api from jsDelivr, pinned to 1.7.15.
+     TO SELF-HOST LATER: download dist/face-api.js and the model folder
+     from github.com/vladmandic/face-api, drop them beside this file, and
+     change this src to ./face-api.js and MODEL_PATH to ./models. Worth
+     doing before rollout — a CDN outage at 9 AM means nobody can punch. -->
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js"></script>
 <script>
 /* ===================== CONFIGURE ME ===================== */
-const API_URL    = 'https://script.google.com/macros/s/AKfycbwomwMepj5woe_D7YEFSE5gIOHIijvXIB7wE_IJ4Z9QQmpfWEuwbJET7dICFrF2PzDLYw/exec';
-const MODEL_PATH = './models';
+const API_URL = 'https://script.google.com/macros/s/AKfycbwomwMepj5woe_D7YEFSE5gIOHIijvXIB7wE_IJ4Z9QQmpfWEuwbJET7dICFrF2PzDLYw/exec';
+
+/**
+ * Model sources, tried in order until one works.
+ *
+ * Self-hosting is the last entry deliberately: once you have downloaded
+ * the model files into ./models, move that line to the TOP and the CDNs
+ * become a fallback rather than the daily dependency.
+ */
+const MODEL_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model',
+  'https://cdn.jsdelivr.net/gh/vladmandic/face-api@master/model',
+  './models'
+];
 /* ======================================================= */
 
 const $ = id => document.getElementById(id);
@@ -120,15 +137,41 @@ async function api(payload) {
   return data;
 }
 
+
+/**
+ * Loads the three models, trying each source in turn. Reports which
+ * source worked, and the real error if none did — "check your
+ * connection" is useless when the actual problem is a 404 on one file.
+ */
+async function loadModels() {
+  if (typeof faceapi === 'undefined') {
+    throw new Error('The face-api library itself did not load. Check the connection, then reload.');
+  }
+
+  var errors = [];
+  for (var i = 0; i < MODEL_SOURCES.length; i++) {
+    var base = MODEL_SOURCES[i];
+    try {
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(base),
+        faceapi.nets.faceLandmark68TinyNet.loadFromUri(base),
+        faceapi.nets.faceRecognitionNet.loadFromUri(base)
+      ]);
+      console.log('Face models loaded from ' + base);
+      return base;
+    } catch (e) {
+      errors.push(base.replace(/^https:\/\/[^/]+/, '') + ': ' + (e.message || e));
+      console.warn('Model source failed: ' + base, e);
+    }
+  }
+  throw new Error('Models failed from all sources. ' + errors.join(' | '));
+}
+
 async function boot() {
   say('Loading face models…');
   try {
-    await Promise.all([
-      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_PATH),
-      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_PATH),
-      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_PATH)
-    ]);
-  } catch (e) { return say('Face models did not load. Check ./models and reload.', 'err'); }
+    await loadModels();
+  } catch (e) { return say(e.message, 'err'); }
 
   try {
     const s = await navigator.mediaDevices.getUserMedia({
