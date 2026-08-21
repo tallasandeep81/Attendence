@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TVL Attendance — Enrollment</title>
+
+<!--
+  Enrollment. Run this once per person, ideally on the same phone model
+  and in the light they will normally punch in.
+
+  Three captures, not one. Descriptors from a single frame are brittle —
+  one blink or one hard shadow and that person fights the punch screen
+  every morning. The three are averaged before saving.
+
+  Needs ATT_ADMIN_PIN, not the site PIN.
+-->
+
+<style>
+  :root{
+    --ink:#141c33; --ink-2:#232d4d; --line:#2c3862; --paper:#f4f6fb;
+    --steel:#8791b0; --go:#12a150; --wait:#e08600; --stop:#d3352b; --live:#3d7bfa;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;min-height:100vh;background:var(--ink);color:#fff;
+       font-family:'Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif;
+       padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom);}
+  header{padding:14px 2px 12px;display:flex;align-items:center;gap:11px;}
+  header .mark{width:36px;height:36px;border-radius:9px;background:#fff;
+    display:flex;align-items:center;justify-content:center;padding:4px;}
+  header .mark img{max-width:100%;max-height:100%;}
+  header h1{margin:0;font-size:16px;} header .sub{font-size:11px;color:var(--steel);letter-spacing:2px;}
+
+  .wrap{max-width:440px;margin:0 auto;}
+  .scope{position:relative;width:min(66vw,240px);aspect-ratio:1;margin:6px auto 14px;}
+  .scope video{position:absolute;inset:8px;width:calc(100% - 16px);height:calc(100% - 16px);
+    border-radius:50%;object-fit:cover;background:#0c1122;transform:scaleX(-1);}
+  .ring{position:absolute;inset:0;border-radius:50%;border:5px solid var(--line);transition:border-color .25s;}
+  .ring.on{border-color:var(--live);} .ring.ok{border-color:var(--go);} .ring.bad{border-color:var(--stop);}
+
+  .pips{display:flex;justify-content:center;gap:9px;margin-bottom:16px;}
+  .pip{width:34px;height:5px;border-radius:3px;background:var(--line);}
+  .pip.got{background:var(--go);}
+
+  label{display:block;font-size:11px;letter-spacing:1.4px;color:var(--steel);
+        font-weight:700;margin:12px 0 5px;}
+  input,select{width:100%;padding:13px;font-size:15px;border-radius:11px;
+    border:1.5px solid var(--line);background:var(--ink-2);color:#fff;}
+  input::placeholder{color:#5b6480;}
+
+  button{width:100%;margin-top:14px;padding:16px;border:0;border-radius:12px;
+    font-size:15px;font-weight:800;letter-spacing:.4px;background:var(--go);color:#fff;}
+  button:disabled{background:#3a4363;color:#8791b0;}
+  button.ghost{background:transparent;border:1.5px solid var(--line);color:var(--steel);
+    font-size:13px;font-weight:600;padding:12px;margin-top:8px;}
+
+  .msg{margin-top:12px;font-size:13px;text-align:center;line-height:1.5;min-height:19px;}
+  .msg.err{color:#ff8f86;} .msg.good{color:#5fe19b;}
+  .roster{margin-top:22px;border-top:1px solid var(--line);padding-top:14px;}
+  .roster h3{font-size:11px;letter-spacing:1.4px;color:var(--steel);margin:0 0 9px;}
+  .roster div{font-size:13px;padding:7px 0;border-bottom:1px solid #1c2440;}
+  .roster span{color:var(--steel);font-size:11px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mark"><img src="./logo-mark.png" alt="TVL"></div>
+    <div><h1>Enrollment</h1><div class="sub">TRANS VALVES · ONE TIME PER PERSON</div></div>
+  </header>
+
+  <div class="scope"><div class="ring" id="ring"></div><video id="cam" playsinline muted autoplay></video></div>
+  <div class="pips"><div class="pip" id="p0"></div><div class="pip" id="p1"></div><div class="pip" id="p2"></div></div>
+
+  <label>ADMIN PIN</label>
+  <input id="pin" type="tel" inputmode="numeric" placeholder="Enrollment PIN">
+
+  <label>EMPLOYEE ID</label>
+  <input id="empId" placeholder="e.g. TVL014">
+
+  <label>FULL NAME</label>
+  <input id="name" placeholder="As it should appear on the dashboard">
+
+  <label>MOBILE</label>
+  <input id="phone" type="tel" inputmode="numeric" placeholder="10 digits">
+
+  <label>DEPARTMENT</label>
+  <input id="dept" placeholder="e.g. STORES, PRODUCTION, SALES">
+
+  <button id="grab" disabled>Capture face 1 of 3</button>
+  <button id="save" disabled>Save this person</button>
+  <button class="ghost" id="reset">Start over</button>
+
+  <div class="msg" id="msg"></div>
+
+  <div class="roster">
+    <h3>ALREADY ENROLLED</h3>
+    <div id="list"><span>Enter the admin PIN to load</span></div>
+  </div>
+</div>
+
+<script src="./face-api.min.js"></script>
+<script>
+/* ===================== CONFIGURE ME ===================== */
+const API_URL    = 'https://script.google.com/macros/s/AKfycbwomwMepj5woe_D7YEFSE5gIOHIijvXIB7wE_IJ4Z9QQmpfWEuwbJET7dICFrF2PzDLYw/exec';
+const MODEL_PATH = './models';
+/* ======================================================= */
+
+const $ = id => document.getElementById(id);
+let shots = [], ready = false;
+
+async function api(payload) {
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(Object.assign({ pin: $('pin').value.trim() }, payload))
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'Something went wrong.');
+  return data;
+}
+
+async function boot() {
+  say('Loading face models…');
+  try {
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_PATH),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_PATH),
+      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_PATH)
+    ]);
+  } catch (e) { return say('Face models did not load. Check ./models and reload.', 'err'); }
+
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 640 } } });
+    $('cam').srcObject = s; await $('cam').play();
+  } catch (e) { return say('Camera blocked. Allow access and reload.', 'err'); }
+
+  ready = true;
+  $('ring').className = 'ring on';
+  $('grab').disabled = false;
+  say('Face the light. Capture three times, moving your head slightly between each.');
+}
+
+$('grab').onclick = async () => {
+  if (!ready) return;
+  $('grab').disabled = true;
+
+  const det = await faceapi
+    .detectSingleFace($('cam'), new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 }))
+    .withFaceLandmarks(true).withFaceDescriptor();
+
+  if (!det) {
+    $('ring').className = 'ring bad';
+    $('grab').disabled = false;
+    return say('No face found. Move closer, add light, try again.', 'err');
+  }
+
+  shots.push(Array.from(det.descriptor));
+  if (shots.length === 1) window.firstShot = grabJpeg();
+
+  $('p' + (shots.length - 1)).classList.add('got');
+  $('ring').className = 'ring ok';
+
+  if (shots.length < 3) {
+    $('grab').textContent = 'Capture face ' + (shots.length + 1) + ' of 3';
+    $('grab').disabled = false;
+    say('Good. Turn your head a little and capture again.');
+  } else {
+    $('grab').textContent = 'Three captured';
+    $('save').disabled = false;
+    say('All three captured. Fill in the details and save.', 'good');
+  }
+};
+
+$('save').onclick = async () => {
+  const id = $('empId').value.trim(), nm = $('name').value.trim();
+  if (!id || !nm) return say('Employee ID and name are both needed.', 'err');
+  if (shots.length < 3) return say('Capture three faces first.', 'err');
+
+  $('save').disabled = true;
+  say('Saving…');
+
+  /* Average the three descriptors — one bad frame then costs a third of
+     its weight instead of all of it. */
+  const avg = shots[0].map((_, i) => (shots[0][i] + shots[1][i] + shots[2][i]) / 3);
+
+  try {
+    const r = await api({
+      action: 'enroll', empId: id, name: nm,
+      phone: $('phone').value.trim(), dept: $('dept').value.trim(),
+      descriptor: avg, photo: window.firstShot
+    });
+    say((r.updated ? 'Updated ' : 'Enrolled ') + r.name + '.', 'good');
+    reset(true);
+    loadList();
+  } catch (e) {
+    say(e.message, 'err');
+    $('save').disabled = false;
+  }
+};
+
+$('reset').onclick = () => reset(false);
+
+function reset(keepPin) {
+  shots = []; window.firstShot = null;
+  ['p0','p1','p2'].forEach(p => $(p).classList.remove('got'));
+  ['empId','name','phone','dept'].forEach(f => $(f).value = '');
+  if (!keepPin) $('pin').value = '';
+  $('grab').textContent = 'Capture face 1 of 3';
+  $('grab').disabled = !ready;
+  $('save').disabled = true;
+  $('ring').className = 'ring on';
+}
+
+function grabJpeg() {
+  const v = $('cam'), c = document.createElement('canvas');
+  const side = Math.min(v.videoWidth, v.videoHeight) || 480;
+  c.width = 360; c.height = 360;
+  c.getContext('2d').drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2,
+                               side, side, 0, 0, 360, 360);
+  return c.toDataURL('image/jpeg', 0.75);
+}
+
+async function loadList() {
+  try {
+    const r = await api({ action: 'roster' });
+    $('list').innerHTML = r.employees.length
+      ? r.employees.map(e => '<div>' + e.name + ' <span>' + e.id +
+          (e.dept ? ' · ' + e.dept : '') + '</span></div>').join('')
+      : '<span>Nobody enrolled yet</span>';
+  } catch (e) { $('list').innerHTML = '<span>' + e.message + '</span>'; }
+}
+
+$('pin').addEventListener('change', loadList);
+function say(t, k) { const m = $('msg'); m.textContent = t; m.className = 'msg ' + (k || ''); }
+boot();
+</script>
+</body>
+</html>
